@@ -38,7 +38,10 @@ from tap import Tap
 
 import koopmanrl.environments  # noqa: F401  (registers the environments with gym)
 from koopmanrl.koopman_observables import allMonomialPowers
-from koopmanrl.soft_koopman_value_iteration import DiscreteKoopmanValueIterationPolicy, generate_koopman_tensor
+from koopmanrl.soft_koopman_value_iteration import (
+    DiscreteKoopmanValueIterationPolicy,
+    generate_koopman_tensor,
+)
 
 # Settings shared with the SKVI script (koopmanrl/soft_koopman_value_iteration.py defaults).
 GAMMA = 0.99

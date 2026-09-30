@@ -8,8 +8,16 @@ import numpy as np
 import torch
 
 import koopmanrl.environments  # noqa: F401
-from koopmanrl.soft_koopman_value_iteration import DiscreteKoopmanValueIterationPolicy, generate_koopman_tensor
-from koopmanrl_utils.skvi_policy_checks import gibbs_policy, monomials, quadratic_cost, quadratic_form
+from koopmanrl.soft_koopman_value_iteration import (
+    DiscreteKoopmanValueIterationPolicy,
+    generate_koopman_tensor,
+)
+from koopmanrl_utils.skvi_policy_checks import (
+    gibbs_policy,
+    monomials,
+    quadratic_cost,
+    quadratic_form,
+)
 
 
 def small_policy(env_id="LinearSystem-v0", seed=1):
