@@ -38,8 +38,11 @@ from tap import Tap
 
 import koopmanrl.environments  # noqa: F401  (registers the environments with gym)
 from koopmanrl.koopman_observables import allMonomialPowers
+from koopmanrl.koopman_observables import monomials as monomial_dictionary
 from koopmanrl.soft_koopman_value_iteration import (
     DiscreteKoopmanValueIterationPolicy,
+    KoopmanTensor,
+    Regressor,
     generate_koopman_tensor,
 )
 
@@ -53,6 +56,8 @@ PROBABILITY_FLOOR = torch.finfo(torch.float64).eps  # the `delta` added to every
 CONFIG_FILES = {
     "LinearSystem-v0": "skvi_linear_system_hparams.json",
     "DoubleWell-v0": "skvi_double_well_hparams.json",
+    "FluidFlow-v0": "skvi_fluid_flow_hparams.json",  # used by skvi_sensitivity_checks (ESM Section S16)
+    "Lorenz-v0": "skvi_lorenz_hparams.json",  # used by skvi_sensitivity_checks (ESM Section S16)
 }
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -78,14 +83,15 @@ def load_config(env_id):
         return json.load(f)
 
 
-def quadratic_cost(env):
-    """The environment's cost (x - x_ref)^T Q (x - x_ref) + u^T R u as an (actions, states) matrix.
+def quadratic_cost(env, action_cost_scale=1.0):
+    """The environment's cost (x - x_ref)^T Q (x - x_ref) + s u^T R u as an (actions, states) matrix.
 
-    Same values as `env.vectorized_cost_fn`, which forms an N x N intermediate and runs out of memory at the SKVI
-    batch size of 2^14 states. R is diagonal in every environment of the package.
+    With the default s = 1 this is the benchmark cost, with the same values as `env.vectorized_cost_fn`, which forms
+    an N x N intermediate and runs out of memory at the SKVI batch size of 2^14 states. R is diagonal in every
+    environment of the package. The sensitivity checks of ESM Section S16 also train with s = dt.
     """
     Q = torch.as_tensor(env.unwrapped.Q, dtype=torch.float64)
-    R_diagonal = torch.diag(torch.as_tensor(env.unwrapped.R, dtype=torch.float64))
+    R_diagonal = torch.diag(torch.as_tensor(env.unwrapped.R, dtype=torch.float64)) * action_cost_scale
     reference = torch.as_tensor(env.unwrapped.reference_point, dtype=torch.float64)
 
     def cost(states, actions):
@@ -97,22 +103,53 @@ def quadratic_cost(env):
     return cost
 
 
-def train_skvi(env_id, seed):
-    """Identify the Koopman tensor and train SKVI exactly as the SKVI script does, without writing checkpoints."""
+def identify_tensor(env_id, seed, config, dt, extra_transitions=None):
+    """Identify the Koopman tensor from random-agent data as the SKVI script does, optionally with more transitions.
+
+    extra_transitions  (X, U, Y) arrays of shape (n, d), (n, 1), (n, d) appended to the random-agent data before the
+                       tensor is refitted (ESM Section S16, re-identification along the policy). SKVI then also fits
+                       its value function on these states, because it fits it on the identification states. They are
+                       appended in single precision, as in the runs reported in the ESM.
+    """
+    tensor = generate_koopman_tensor(
+        env_id=env_id,
+        seed=seed,
+        num_paths=config["num-paths"],
+        num_steps_per_path=config["num-steps-per-path"],
+        state_order=config["state-order"],
+        action_order=config["action-order"],
+        regressor="ols",
+    )
+    if extra_transitions is None:
+        return tensor
+    X_extra, U_extra, Y_extra = (torch.from_numpy(a.T.astype(np.float32)) for a in extra_transitions)
+    return KoopmanTensor(
+        torch.cat([tensor.X, X_extra], 1),
+        torch.cat([tensor.Y, Y_extra], 1),
+        torch.cat([tensor.U, U_extra], 1),
+        phi=monomial_dictionary(config["state-order"]),
+        psi=monomial_dictionary(config["action-order"]),
+        regressor=Regressor("ols"),
+        **({} if dt is None else {"dt": dt}),
+    )
+
+
+def train_skvi(env_id, seed, state_order=None, action_cost_scale=1.0, extra_transitions=None):
+    """Identify the Koopman tensor and train SKVI exactly as the SKVI script does, without writing checkpoints.
+
+    The defaults give the tuned configuration of the paper. The sensitivity checks of ESM Section S16 change the order
+    of the state dictionary, scale the action-cost weight R (in training and in the deployed policy) and append
+    transitions of a trained policy to the identification data (see `identify_tensor`).
+    """
     config = load_config(env_id)
+    if state_order is not None:
+        config = dict(config, **{"state-order": state_order})
     np.random.seed(seed)
     torch.manual_seed(seed)
     env = gym.make(env_id)
+    dt = getattr(env.unwrapped, "dt", None)
     with contextlib.redirect_stdout(io.StringIO()):  # the package prints progress for every epoch
-        tensor = generate_koopman_tensor(
-            env_id=env_id,
-            seed=seed,
-            num_paths=config["num-paths"],
-            num_steps_per_path=config["num-steps-per-path"],
-            state_order=config["state-order"],
-            action_order=config["action-order"],
-            regressor="ols",
-        )
+        tensor = identify_tensor(env_id, seed, config, dt, extra_transitions)
         actions = torch.from_numpy(np.linspace(env.action_space.low, env.action_space.high, NUM_ACTIONS)).T
         policy = DiscreteKoopmanValueIterationPolicy(
             env_id=env_id,
@@ -120,10 +157,10 @@ def train_skvi(env_id, seed):
             alpha=ALPHA,
             dynamics_model=tensor,
             all_actions=actions,
-            cost=quadratic_cost(env),
+            cost=quadratic_cost(env, action_cost_scale),
             seed=seed,
             use_ols=True,
-            dt=getattr(env.unwrapped, "dt", None),
+            dt=dt,
         )
         policy.train(config["number-of-train-epochs"], BATCH_SIZE, 1, how_often_to_chkpt=10**9)
     return env, tensor, policy, config

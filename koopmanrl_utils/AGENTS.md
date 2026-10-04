@@ -36,6 +36,8 @@ koopmanrl_utils/
 ├── run_optimized_experiments.py         # Runs the optimized experimental configurations of the Koopman algorithms
 ├── run_sakc_optimization.py             # Runs the Soft Actor Koopman Critic hyperparameter optimization
 ├── run_skvi_optimization.py             # Runs the Soft Koopman Value Iteration hyperparameter optimization
+├── skvi_policy_checks.py                # Checks behind the reading of the SKVI policy (ESM Section S11)
+├── skvi_sensitivity_checks.py           # Accuracy along the learned policy and sensitivity of SKVI (ESM Section S16)
 └── tsne_koopman_tensor.py               # Loads the saved Koopman tensors and generates a t-SNE plot from it
 ```
 

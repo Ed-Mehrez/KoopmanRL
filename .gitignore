@@ -12,6 +12,7 @@ saved_models/
 figures/
 video_frames/
 
-# Output of koopmanrl_utils/skvi_policy_checks.py
+# Output of koopmanrl_utils/skvi_policy_checks.py and skvi_sensitivity_checks.py
 skvi_policy_checks_results/
+skvi_sensitivity_checks_results/
 koopmanrl_utils/__pycache__/
