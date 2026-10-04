@@ -61,6 +61,8 @@ HORIZON = {"LinearSystem-v0": 200, "DoubleWell-v0": 2000, "FluidFlow-v0": 2000, 
 
 # Radius of "near the target" for the time-near-target fraction of Tables S7 and S8.
 NEAR_RADIUS = {"DoubleWell-v0": 0.25, "Lorenz-v0": 2.0}
+# A seed counts as failed when its mean-action policy is near the target for less than this fraction of the episode.
+FAILURE_FRACTION = 0.001
 
 # Variants of Tables S7 and S8: (name, state-dictionary order, action-cost scale, rounds of re-identification).
 # The action-cost scale 0.01 is R * dt for both systems (dt = 0.01).
@@ -598,10 +600,11 @@ def summarize(output_dir):
         corner = box_corner_distance(f"{environment}-v0")
         for name in runs[0]["variants"]:
             mean_action = [r["variants"][name]["mean_action"] for r in runs]
-            never_near = sum(e["fraction_near"] == 0 for e in mean_action)
+            failed = sum(e["fraction_near"] < FAILURE_FRACTION for e in mean_action)
             left_box = sum(e["late_distance"] > corner for e in mean_action)
             print(
-                f"  {name:<34} mean action: seeds never near the target {never_near} of {len(runs)}, seeds whose late "
+                f"  {name:<34} mean action: seeds near the target under {100 * FAILURE_FRACTION:g}% of the episode "
+                f"{failed} of {len(runs)}, seeds whose late "
                 f"distance exceeds the farthest corner of the state box ({corner:.2f}) {left_box} of {len(runs)}"
             )
         for name in runs[0]["variants"]:
