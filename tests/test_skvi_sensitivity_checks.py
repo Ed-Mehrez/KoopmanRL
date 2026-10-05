@@ -18,6 +18,7 @@ from koopmanrl_utils.skvi_policy_checks import (
     quadratic_cost,
 )
 from koopmanrl_utils.skvi_sensitivity_checks import (
+    check_variant_names,
     double_well_conditional_mean,
     evaluate,
     features,
@@ -27,6 +28,7 @@ from koopmanrl_utils.skvi_sensitivity_checks import (
     lqr_controller,
     one_step_errors,
     predict,
+    write,
 )
 
 
@@ -175,3 +177,24 @@ def test_identify_tensor_appends_transitions_in_single_precision():
         assert stored.shape[1] == getattr(base, name).shape[1] + 5
         assert np.array_equal(stored[:, : getattr(base, name).shape[1]], getattr(base, name).numpy())
         assert np.array_equal(stored[:, -5:], appended.T.astype(np.float32).astype(stored.dtype))
+
+
+def test_runs_with_other_settings_are_not_overwritten(tmp_path):
+    write(str(tmp_path), "sensitivity", "Lorenz-v0", 100, {"settings": {"variant_subset": []}})
+    write(str(tmp_path), "sensitivity", "Lorenz-v0", 100, {"settings": {"variant_subset": []}})  # a rerun is fine
+    try:
+        write(str(tmp_path), "sensitivity", "Lorenz-v0", 100, {"settings": {"variant_subset": ["order 3"]}})
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("a run with other settings replaced the file")
+
+
+def test_unknown_variant_names_are_rejected():
+    check_variant_names(["order 3, refit x1, tensor only"], ["Lorenz"])
+    try:
+        check_variant_names(["order 3, refit"], ["Lorenz"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown variant name was accepted")

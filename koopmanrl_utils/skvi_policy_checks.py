@@ -134,13 +134,21 @@ def identify_tensor(env_id, seed, config, dt, extra_transitions=None):
     )
 
 
-def train_skvi(env_id, seed, state_order=None, action_cost_scale=1.0, extra_transitions=None):
+def train_skvi(
+    env_id, seed, state_order=None, action_cost_scale=1.0, extra_transitions=None, extra_transitions_for="both"
+):
     """Identify the Koopman tensor and train SKVI exactly as the SKVI script does, without writing checkpoints.
 
     The defaults give the tuned configuration of the paper. The sensitivity checks of ESM Section S16 change the order
     of the state dictionary, scale the action-cost weight R (in training and in the deployed policy) and append
-    transitions of a trained policy to the identification data (see `identify_tensor`).
+    transitions of a trained policy to the identification data (see `identify_tensor`). SKVI draws the states on
+    which it fits its value function from the identification states, so appended transitions change both the tensor
+    and those states. `extra_transitions_for` separates the two: "both" (re-identification), "tensor" (the value
+    function is fitted on the random-agent states only) or "value" (the tensor is fitted on the random-agent data only
+    and the appended states join the value fit).
     """
+    if extra_transitions_for not in ("both", "tensor", "value"):
+        raise ValueError("extra_transitions_for must be 'both', 'tensor' or 'value'")
     config = load_config(env_id)
     if state_order is not None:
         config = dict(config, **{"state-order": state_order})
@@ -149,7 +157,16 @@ def train_skvi(env_id, seed, state_order=None, action_cost_scale=1.0, extra_tran
     env = gym.make(env_id)
     dt = getattr(env.unwrapped, "dt", None)
     with contextlib.redirect_stdout(io.StringIO()):  # the package prints progress for every epoch
-        tensor = identify_tensor(env_id, seed, config, dt, extra_transitions)
+        for_tensor = extra_transitions if extra_transitions_for in ("both", "tensor") else None
+        tensor = identify_tensor(env_id, seed, config, dt, for_tensor)
+        if extra_transitions is not None and extra_transitions_for != "both":
+            random_agent = config["num-paths"] * config["num-steps-per-path"]
+            if extra_transitions_for == "tensor":  # fit the value function on the random-agent states only
+                tensor.X, tensor.Phi_X = tensor.X[:, :random_agent], tensor.Phi_X[:, :random_agent]
+            else:  # add the transitions' states to the value fit, keeping the random-agent tensor
+                states = torch.from_numpy(extra_transitions[0].T.astype(np.float32)).to(tensor.X.dtype)
+                tensor.X = torch.cat([tensor.X, states], 1)
+                tensor.Phi_X = torch.cat([tensor.Phi_X, tensor.phi(states).to(tensor.Phi_X.dtype)], 1)
         actions = torch.from_numpy(np.linspace(env.action_space.low, env.action_space.high, NUM_ACTIONS)).T
         policy = DiscreteKoopmanValueIterationPolicy(
             env_id=env_id,

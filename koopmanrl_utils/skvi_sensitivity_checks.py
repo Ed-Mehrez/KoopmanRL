@@ -64,22 +64,25 @@ NEAR_RADIUS = {"DoubleWell-v0": 0.25, "Lorenz-v0": 2.0}
 # A seed counts as failed when its mean-action policy is near the target for less than this fraction of the episode.
 FAILURE_FRACTION = 0.001
 
-# Variants of Tables S7 and S8: (name, state-dictionary order, action-cost scale, rounds of re-identification).
-# The action-cost scale 0.01 is R * dt for both systems (dt = 0.01).
+# Variants of Tables S7 and S8: (name, state-dictionary order, action-cost scale, rounds of re-identification, what the
+# policy transitions are used for: "both" re-identifies, "tensor" or "value" separates the two effects, see
+# `skvi_policy_checks.train_skvi`). The action-cost scale 0.01 is R * dt for both systems (dt = 0.01).
 VARIANTS = {
     "DoubleWell-v0": [
-        ("order 2", 2, 1.0, 0),
-        ("order 2, R*dt", 2, 0.01, 0),
-        ("order 4, R*dt", 4, 0.01, 0),
-        ("order 5, R*dt", 5, 0.01, 0),
-        ("order 6, R*dt", 6, 0.01, 0),
+        ("order 2", 2, 1.0, 0, "both"),
+        ("order 2, R*dt", 2, 0.01, 0, "both"),
+        ("order 4, R*dt", 4, 0.01, 0, "both"),
+        ("order 5, R*dt", 5, 0.01, 0, "both"),
+        ("order 6, R*dt", 6, 0.01, 0, "both"),
     ],
     "Lorenz-v0": [
-        ("order 3", 3, 1.0, 0),
-        ("order 3, refit x1", 3, 1.0, 1),
-        ("order 4", 4, 1.0, 0),
-        ("order 4, refit x1", 4, 1.0, 1),
-        ("order 4, refit x2", 4, 1.0, 2),
+        ("order 3", 3, 1.0, 0, "both"),
+        ("order 3, refit x1", 3, 1.0, 1, "both"),
+        ("order 3, refit x1, tensor only", 3, 1.0, 1, "tensor"),
+        ("order 3, refit x1, value states only", 3, 1.0, 1, "value"),
+        ("order 4", 4, 1.0, 0, "both"),
+        ("order 4, refit x1", 4, 1.0, 1, "both"),
+        ("order 4, refit x2", 4, 1.0, 2, "both"),
     ],
 }
 # LQR references of Tables S7 and S8: (name, action-cost scale).
@@ -97,6 +100,7 @@ class ArgumentParser(Tap):
     accuracy_episodes: int = 16  # closed-loop episodes sampled for the accuracy study
     random_agent_paths: int = 20  # random-agent trajectories for the reference distribution
     evaluation_episodes: int = 10  # closed-loop episodes per controller in the sensitivity study
+    variants: list[str] = []  # sensitivity study: run only these variants (default: all); each variant is seeded alone
     summarize_only: bool = False  # skip the runs and summarize the files already in output_dir
 
 
@@ -469,6 +473,7 @@ def sensitivity_run(env_id, seed, args):
             "evaluation_episodes": args.evaluation_episodes,
             "near_radius": near,
             "variants": VARIANTS[env_id],
+            "variant_subset": args.variants,
             "lqr_references": LQR_REFERENCES[env_id],
         },
         "references": {},
@@ -483,7 +488,9 @@ def sensitivity_run(env_id, seed, args):
         summary = evaluate(env, controller, seed, args.evaluation_episodes, horizon, near)
         result["references"][name] = {"evaluation": summary, "gain": None if K is None else K.ravel().tolist()}
 
-    for name, order, scale, rounds in VARIANTS[env_id]:
+    for name, order, scale, rounds, used_for in VARIANTS[env_id]:
+        if args.variants and name not in args.variants:
+            continue
         env, tensor, policy, config = train_skvi(env_id, seed, state_order=order, action_cost_scale=scale)
         transitions = None
         for round_ in range(rounds):  # re-identify on the random-agent data plus all transitions of the policies so far
@@ -493,7 +500,12 @@ def sensitivity_run(env_id, seed, args):
                 new if transitions is None else tuple(np.concatenate([a, b]) for a, b in zip(transitions, new))
             )
             env, tensor, policy, config = train_skvi(
-                env_id, seed, state_order=order, action_cost_scale=scale, extra_transitions=transitions
+                env_id,
+                seed,
+                state_order=order,
+                action_cost_scale=scale,
+                extra_transitions=transitions,
+                extra_transitions_for=used_for,
             )
         _, powers = monomials(env.observation_space.shape[0], order)
         dynamics = local_dynamics(env, tensor, linear_indices(powers))
@@ -501,6 +513,7 @@ def sensitivity_run(env_id, seed, args):
             "state_order": order,
             "action_cost_scale": scale,
             "reidentification_rounds": rounds,
+            "policy_transitions_used_for": used_for,
             "policy_transitions": 0 if transitions is None else int(len(transitions[0])),
             "sampled": evaluate(env, deployed_controller(policy), seed, args.evaluation_episodes, horizon, near),
             "mean_action": evaluate(
@@ -526,8 +539,23 @@ def sensitivity_run(env_id, seed, args):
 
 
 def write(output_dir, study, env_id, seed, result):
-    with open(os.path.join(output_dir, f"{study}_{env_id.split('-')[0]}_{seed}.json"), "w") as f:
+    """Write one run, refusing to replace a file of the same run made with other settings (e.g. another variant set)."""
+    path = os.path.join(output_dir, f"{study}_{env_id.split('-')[0]}_{seed}.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            previous = json.load(f).get("settings")
+        if json.dumps(previous, sort_keys=True) != json.dumps(result.get("settings"), sort_keys=True):
+            raise FileExistsError(f"{path} holds a run made with other settings; use another --output_dir")
+    with open(path, "w") as f:
         json.dump(result, f, indent=1)
+
+
+def check_variant_names(names, environments):
+    """Raise if a name passed to --variants is not a variant of the sensitivity study for these environments."""
+    known = {name for environment in environments for name, *_ in VARIANTS.get(f"{environment}-v0", [])}
+    unknown = sorted(set(names) - known)
+    if unknown:
+        raise ValueError(f"unknown variants {unknown}; known: {sorted(known)}")
 
 
 def load_results(output_dir, study, environment):
@@ -625,6 +653,8 @@ if __name__ == "__main__":
     if not args.summarize_only:
         defaults = ACCURACY_ENVIRONMENTS if args.study == "accuracy" else SENSITIVITY_ENVIRONMENTS
         run = accuracy_run if args.study == "accuracy" else sensitivity_run
+        if args.variants:
+            check_variant_names(args.variants, args.environments or defaults)
         for environment in args.environments or defaults:
             for seed in args.seeds:
                 run(f"{environment}-v0", seed, args)
