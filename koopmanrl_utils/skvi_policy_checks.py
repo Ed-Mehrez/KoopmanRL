@@ -1,7 +1,10 @@
-"""Checks behind the reading of the SKVI policy in the electronic supplementary material (ESM, Section S11).
+"""Read the deployed policy of Soft Koopman Value Iteration (SKVI) off the Koopman tensor, and check the reading.
 
-For each seed, Soft Koopman Value Iteration (SKVI) is trained with the tuned configuration in `configurations/`, and
-its deployed Gibbs policy is read off the Koopman tensor.
+For each seed, SKVI is trained with the tuned configuration in `configurations/`. With the polynomial action
+dictionary psi(u) = (1, u, u^2, ...), the fitted continuation w^T K^u phi(x) is a polynomial in the action whose
+coefficients are functions of the state read off the slices of the tensor (`action_fields`), so the deployed Gibbs
+policy can be written down in closed form (`policy_reading`). The checks compare that reading with references that
+do not use the tensor.
 
 Linear system
     The learned quadratic form of the value function is compared with the Riccati matrix of the discounted linear
@@ -21,6 +24,10 @@ Usage (from the repository root):
 Each run writes one JSON file into `--output_dir` (default `skvi_policy_checks_results/`, not tracked by git). Random
 draws use NumPy's global generator, seeded per run as in `koopmanrl.soft_koopman_value_iteration`, in a fixed order, so
 a run is reproducible from its seed.
+
+Reference: the theory and the results of these checks are in the electronic supplementary material of
+"Koopman-Assisted Reinforcement Learning" (Rozwood, Mehrez, Paehler, Sun and Brunton), section "Additional validation
+and interpretability material".
 """
 
 import contextlib
@@ -56,8 +63,8 @@ PROBABILITY_FLOOR = torch.finfo(torch.float64).eps  # the `delta` added to every
 CONFIG_FILES = {
     "LinearSystem-v0": "skvi_linear_system_hparams.json",
     "DoubleWell-v0": "skvi_double_well_hparams.json",
-    "FluidFlow-v0": "skvi_fluid_flow_hparams.json",  # used by skvi_sensitivity_checks (ESM Section S16)
-    "Lorenz-v0": "skvi_lorenz_hparams.json",  # used by skvi_sensitivity_checks (ESM Section S16)
+    "FluidFlow-v0": "skvi_fluid_flow_hparams.json",  # used by skvi_sensitivity_checks
+    "Lorenz-v0": "skvi_lorenz_hparams.json",  # used by skvi_sensitivity_checks
 }
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,7 +76,7 @@ class ArgumentParser(Tap):
     episodes: int = 10  # paired rollout episodes per variant (double well)
     horizon: int = 2000  # steps per rollout episode (double well)
     summarize_only: bool = False  # skip the runs and summarize the files already in output_dir
-    plot: bool = False  # also draw the two ESM figures into output_dir
+    plot: bool = False  # also draw the two figures of `plot` into output_dir
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -78,7 +85,7 @@ class ArgumentParser(Tap):
 
 
 def load_config(env_id):
-    """Tuned SKVI configuration of the paper for `env_id`."""
+    """Tuned SKVI configuration for `env_id`, from its file in `configurations/`."""
     with open(os.path.join(REPO_ROOT, "configurations", CONFIG_FILES[env_id])) as f:
         return json.load(f)
 
@@ -88,7 +95,8 @@ def quadratic_cost(env, action_cost_scale=1.0):
 
     With the default s = 1 this is the benchmark cost, with the same values as `env.vectorized_cost_fn`, which forms
     an N x N intermediate and runs out of memory at the SKVI batch size of 2^14 states. R is diagonal in every
-    environment of the package. The sensitivity checks of ESM Section S16 also train with s = dt.
+    environment of the package. `skvi_sensitivity_checks` also trains with s = dt, which makes actions cheaper relative
+    to the state cost by that factor.
     """
     Q = torch.as_tensor(env.unwrapped.Q, dtype=torch.float64)
     R_diagonal = torch.diag(torch.as_tensor(env.unwrapped.R, dtype=torch.float64)) * action_cost_scale
@@ -107,9 +115,11 @@ def identify_tensor(env_id, seed, config, dt, extra_transitions=None):
     """Identify the Koopman tensor from random-agent data as the SKVI script does, optionally with more transitions.
 
     extra_transitions  (X, U, Y) arrays of shape (n, d), (n, 1), (n, d) appended to the random-agent data before the
-                       tensor is refitted (ESM Section S16, re-identification along the policy). SKVI then also fits
-                       its value function on these states, because it fits it on the identification states. They are
-                       appended in single precision, as in the runs reported in the ESM.
+                       tensor is refitted, for example transitions of a trained policy (re-identification along the
+                       policy). SKVI then also fits its value function on these states, because it fits it on the
+                       identification states. They are rounded to single precision before they are appended (a
+                       relative change below 1e-7, far below the model's one-step error), which keeps the results
+                       identical to those of the scripts these checks were first run with.
     """
     tensor = generate_koopman_tensor(
         env_id=env_id,
@@ -139,13 +149,13 @@ def train_skvi(
 ):
     """Identify the Koopman tensor and train SKVI exactly as the SKVI script does, without writing checkpoints.
 
-    The defaults give the tuned configuration of the paper. The sensitivity checks of ESM Section S16 change the order
-    of the state dictionary, scale the action-cost weight R (in training and in the deployed policy) and append
-    transitions of a trained policy to the identification data (see `identify_tensor`). SKVI draws the states on
-    which it fits its value function from the identification states, so appended transitions change both the tensor
-    and those states. `extra_transitions_for` separates the two: "both" (re-identification), "tensor" (the value
-    function is fitted on the random-agent states only) or "value" (the tensor is fitted on the random-agent data only
-    and the appended states join the value fit).
+    The defaults give the tuned configuration in `configurations/`. The optional arguments, used by
+    `skvi_sensitivity_checks`, change the order of the state dictionary, scale the action-cost weight R (in training
+    and in the deployed policy) and append transitions to the identification data (see `identify_tensor`). SKVI draws
+    the states on which it fits its value function from the identification states, so appended transitions change
+    both the tensor and those states. `extra_transitions_for` separates the two: "both" (re-identification), "tensor"
+    (the value function is fitted on the random-agent states only) or "value" (the tensor is fitted on the
+    random-agent data only and the appended states join the value fit).
     """
     if extra_transitions_for not in ("both", "tensor", "value"):
         raise ValueError("extra_transitions_for must be 'both', 'tensor' or 'value'")
@@ -251,8 +261,13 @@ def linear_coefficients(coefficients, powers):
 def action_fields(tensor, w):
     """Coefficient vectors of the fields h_k(x) = w^T T[:, :, k] phi(x), one row per action-dictionary function.
 
-    With the polynomial action dictionary psi(u) = (1, u, u^2, ...), the fitted continuation is
-    w^T K^u phi(x) = sum_k h_k(x) u^k.
+    With the polynomial action dictionary psi(u) = (1, u, u^2, ...), the fitted continuation is a polynomial in the
+    action, w^T K^u phi(x) = sum_k h_k(x) u^k, and row k holds the coefficients of h_k on the state dictionary phi.
+    The deployed policy weighs action u by exp(-(c(x, u) + discount * sum_k h_k(x) u^k) / alpha), so it is an
+    exponential family over the action dictionary with natural parameters -discount * h_k(x) / alpha and depends on w
+    only through these fields. This is Proposition S11.1 ("The policy is an exponential family over the action
+    dictionary") of the reference in the module docstring. The reference states it for the value function, whose
+    fields have the opposite sign, because the package stores the coefficients w of the cost-to-go.
     """
     T = tensor.K.numpy()
     return np.array([T[:, :, k].T @ w for k in range(T.shape[2])])
@@ -278,6 +293,14 @@ def relative_error(estimate, reference):
 
 def policy_reading(env_id, env, tensor, policy, w, names, powers):
     """Gain of the mean action against an LQR comparator, and the closed-form Gaussian mean.
+
+    When the action cost is R u^2 and the fields h_k of degree three and higher vanish (`action_fields`), the policy's
+    weights on the action grid follow a Gaussian with mean -discount * h_1(x) / (2 (R + discount * h_2(x))) and
+    variance alpha / (2 (R + discount * h_2(x))). This is Corollary S11.2 ("Polynomial action dictionary, quadratic
+    action cost") of the reference in the module docstring, with the sign of the fields as in `action_fields`. With
+    h_2 constant, the degree-one part of h_1 gives the closed-form gain, which is compared with the gain fitted to the
+    grid policy's mean action. On the double well the closed-form mean is also compared with the grid mean on a box
+    of states.
 
     Linear system: the comparator is the discounted LQR of the seed's (A, B, Q, R), on states whose LQR action lies
     well inside the action grid (|Kx| < 7 for the grid [-10, 10]). Double well: the comparator is the LQR of the
@@ -436,7 +459,7 @@ def load_results(output_dir, name):
 
 
 def summarize(output_dir):
-    """Print the statistics quoted in ESM Section S11 (medians and interquartile ranges over seeds)."""
+    """Print the results of all seeds in output_dir: medians and interquartile ranges over seeds, and the extremes."""
     linear = load_results(output_dir, "LinearSystem")
     if linear:
         P_err = [r["reading"]["P_relative_error"] for r in linear]
@@ -478,7 +501,13 @@ def summarize(output_dir):
 
 
 def plot(output_dir):
-    """Draw the two ESM figures (linear-system agreement; double-well value and mean action) into output_dir."""
+    """Draw two figures into output_dir.
+
+    linear_costate.pdf      linear system, all seeds: gain from the mean action against the LQR gain, and the
+                            learned quadratic form against the Riccati matrix
+    double_well_costate.pdf double well, first seed: the learned cost-to-go and the mean action on [-2, 2]^2, with
+                            the direction of the drift
+    """
     import matplotlib
 
     matplotlib.use("Agg")

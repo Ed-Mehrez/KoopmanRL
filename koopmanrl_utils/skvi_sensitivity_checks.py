@@ -1,23 +1,32 @@
-"""Checks behind the electronic supplementary material (ESM), Section S16.
+"""Accuracy of the fitted Koopman tensor along the trained SKVI policy, and sensitivity of SKVI's control.
 
-Accuracy of the fitted Koopman tensor along the trained SKVI policy, and sensitivity of SKVI's control to the
-dictionary, the action cost and the data the tensor is identified from.
+The Koopman tensor is identified from random-agent data, as in `koopmanrl.soft_koopman_value_iteration`, while the
+trained policy visits other states. The first study measures how accurate the fitted model is along the policy. The
+second retrains SKVI with other dictionaries, action costs and identification data, and compares its control with
+references that do not use the tensor.
 
-Accuracy along the policy (Table S6; all four benchmarks)
-    The tensor is identified from random-agent data as in the paper and evaluated on transitions of the trained SKVI
-    policy and on fresh random-agent transitions. The one-step error is the normalised error of the main text,
-    equation (4.7), with the scale of each dictionary function fixed from the random-agent targets for both
-    distributions ("common scale"). Recomputing the scale on near-target data, where the high-degree functions are
-    tiny, inflates the error by orders of magnitude, so that version is recorded too, for comparison. The persistence
-    baseline phi(x) and the error of the predicted state, in the units of the state, are reported alongside. For the
-    double well the target is the exact conditional mean of the quadratic dictionary under one Euler-Maruyama step.
-    The run also records the one-step Jacobian of the fitted model at the target against that of the environment's
-    one-step map, and the distance from the target of the closed loop and of the uncontrolled system.
+Accuracy along the policy (`--study accuracy`; all four benchmarks)
+    The tensor is evaluated on transitions of the trained SKVI policy and on fresh random-agent transitions. The
+    one-step error is the root mean square, over transitions n and nonconstant dictionary functions j, of the
+    normalised prediction error
 
-Sensitivity of the control (Tables S7 and S8; double well and Lorenz)
-    SKVI is retrained with other orders of the state dictionary, with the action-cost weight scaled by the time step,
-    and after re-identifying the tensor on transitions of the trained policy. Each variant is compared with no control
-    and with the LQR controller of the linearisation at the target, on the same episodes. Only SKVI is retrained.
+        (K^{u_n} phi(x_n) - E[phi(x'_n) | x_n, u_n])_j / s_j,
+
+    where the conditional mean is phi(x'_n) itself for the deterministic benchmarks and the exact conditional mean of
+    the quadratic dictionary under one Euler-Maruyama step for the double well. The scale s_j is the root mean square
+    of the target on the random-agent transitions and is used for both distributions ("common scale"), so that the two
+    errors are comparable. Recomputing it on the data being evaluated ("own scale") inflates the error near the
+    target, where the high-degree functions are tiny, by orders of magnitude, so that version is recorded too. The same
+    error with phi(x_n) in place of the prediction is the persistence baseline (predicting no change). The error of
+    the predicted state is reported in the units of the state. The run also records the one-step Jacobian of the
+    fitted model at the target against that of the environment's one-step map, and the distance from the target of the
+    closed loop and of the uncontrolled system.
+
+Sensitivity of the control (`--study sensitivity`; double well and Lorenz)
+    SKVI is retrained with other orders of the state dictionary, with the action-cost weight R multiplied by the time
+    step (actions a hundred times cheaper relative to the state cost), and after re-identifying the tensor on
+    transitions of the trained policy. Each variant is compared with no control and with the LQR controller of the
+    linearisation at the target, on the same episodes. Only SKVI is retrained.
 
 Usage (from the repository root):
 
@@ -32,9 +41,13 @@ global generator, seeded per episode or per data set in a fixed order, so a run 
 and policies are built by `skvi_policy_checks.train_skvi`, as in `koopmanrl.soft_koopman_value_iteration`, with the
 tuned configurations in `configurations/`.
 
-The tables of ESM Section S16 were first produced by exploratory scripts that this module consolidates. With the same
-seeds it reproduces their numbers exactly, except the one-step Jacobians of the fitted model recorded by the
-sensitivity study, which it evaluates in double precision with a step of 1e-4 (differences below 1e-7).
+The results were first produced by exploratory scripts that this module consolidates. With the same seeds it
+reproduces their numbers exactly, except the one-step Jacobians of the fitted model recorded by the sensitivity study,
+which it evaluates in double precision with a step of 1e-4 (differences below 1e-7).
+
+Reference: the results of these checks are in the electronic supplementary material of "Koopman-Assisted Reinforcement
+Learning" (Rozwood, Mehrez, Paehler, Sun and Brunton), section "Accuracy along the learned policy and sensitivity of
+SKVI".
 """
 
 import contextlib
@@ -59,13 +72,14 @@ SENSITIVITY_ENVIRONMENTS = ["DoubleWell", "Lorenz"]
 # Steps per closed-loop episode: the benchmark episode of 2,000 steps, and 200 for the discrete-time linear system.
 HORIZON = {"LinearSystem-v0": 200, "DoubleWell-v0": 2000, "FluidFlow-v0": 2000, "Lorenz-v0": 2000}
 
-# Radius of "near the target" for the time-near-target fraction of Tables S7 and S8.
+# A state is near the target when its Euclidean distance from the target is below this radius; the sensitivity study
+# reports the fraction of each episode spent near the target.
 NEAR_RADIUS = {"DoubleWell-v0": 0.25, "Lorenz-v0": 2.0}
 # A seed counts as failed when its mean-action policy is near the target for less than this fraction of the episode.
 FAILURE_FRACTION = 0.001
 
-# Variants of Tables S7 and S8: (name, state-dictionary order, action-cost scale, rounds of re-identification, what the
-# policy transitions are used for: "both" re-identifies, "tensor" or "value" separates the two effects, see
+# Variants of the sensitivity study: (name, state-dictionary order, action-cost scale, rounds of re-identification,
+# what the policy transitions are used for: "both" re-identifies, "tensor" or "value" separates the two effects, see
 # `skvi_policy_checks.train_skvi`). The action-cost scale 0.01 is R * dt for both systems (dt = 0.01).
 VARIANTS = {
     "DoubleWell-v0": [
@@ -85,7 +99,7 @@ VARIANTS = {
         ("order 4, refit x2", 4, 1.0, 2, "both"),
     ],
 }
-# LQR references of Tables S7 and S8: (name, action-cost scale).
+# LQR references of the sensitivity study: (name, action-cost scale).
 LQR_REFERENCES = {
     "DoubleWell-v0": [("LQR, benchmark R", 1.0), ("LQR, R*dt", 0.01)],
     "Lorenz-v0": [("LQR, benchmark R", 1.0)],
@@ -93,7 +107,7 @@ LQR_REFERENCES = {
 
 
 class ArgumentParser(Tap):
-    study: str = "accuracy"  # "accuracy" (Table S6) or "sensitivity" (Tables S7 and S8)
+    study: str = "accuracy"  # "accuracy" (model error along the policy) or "sensitivity" (SKVI retrained in variants)
     environments: list[str] = []  # default: all four benchmarks for accuracy, double well and Lorenz for sensitivity
     seeds: list[int] = list(range(100, 108))  # one SKVI training per seed and variant
     output_dir: str = "skvi_sensitivity_checks_results"  # one JSON file per study, environment and seed
@@ -258,8 +272,9 @@ def one_step_errors(prediction, target, base, X, next_state, nonconstant, linear
     """Normalised one-step errors of the model and of persistence, at two scales, and the error of the state.
 
     The normalised error is sqrt(mean_n mean_j ((prediction - target)_nj / s_j)^2) over the nonconstant dictionary
-    functions j, with s_j the root mean square of the target either on the data itself ("own scale", as in Table 2 of
-    the main text) or on the random-agent data ("common scale", which makes the two distributions comparable).
+    functions j, with s_j the root mean square of the target either on the data itself ("own scale") or on the
+    random-agent data ("common scale", which makes the two distributions comparable). The persistence error is the
+    same with `base` (phi(x), no change) in place of the prediction.
     """
     p, t, b = prediction[:, nonconstant], target[:, nonconstant], base[:, nonconstant]
     out = {"n": int(len(X))}
@@ -309,7 +324,7 @@ def local_dynamics(env, tensor, linear, h=1e-4):
 
 
 def accuracy_run(env_id, seed, args):
-    """Table S6 for one environment and seed: one-step error along the policy and on random-agent data."""
+    """Accuracy study for one environment and seed: one-step error along the policy and on random-agent data."""
     start = time.time()
     env, tensor, policy, config = train_skvi(env_id, seed)
     d = env.observation_space.shape[0]
@@ -449,8 +464,9 @@ def gain_near_target(policy, env, samples=3000):
     """Least-squares gain K of the mean action, u = -K (x - x_ref), on states near the target.
 
     The states are drawn uniformly from the cube of half-width 0.3 around the target with NumPy's global generator,
-    which `sensitivity_run` leaves in the state reached after the mean-action evaluation, as in the runs reported in
-    the ESM. The drawn states, and hence the gain, therefore depend on that call order and on the episode count.
+    which `sensitivity_run` leaves in the state reached after the mean-action evaluation. This order is kept so that
+    the gains equal those of the scripts these checks were first run with. The drawn states, and hence the gain,
+    therefore depend on that call order and on the episode count.
     """
     target = np.asarray(env.unwrapped.reference_point, dtype=np.float64)
     act = deployed_controller(policy, mean=True)
@@ -460,7 +476,7 @@ def gain_near_target(policy, env, samples=3000):
 
 
 def sensitivity_run(env_id, seed, args):
-    """Tables S7 and S8 for one environment and seed: references, then every variant of VARIANTS[env_id]."""
+    """Sensitivity study for one environment and seed: the references, then every variant of VARIANTS[env_id]."""
     start = time.time()
     env = gym.make(env_id)
     near = NEAR_RADIUS[env_id]
@@ -576,7 +592,7 @@ def box_corner_distance(env_id):
 
 
 def summarize(output_dir):
-    """Print the medians over seeds quoted in Tables S6 to S8 of the ESM."""
+    """Print the medians over seeds of both studies, with the failure counts and the model's local coefficient."""
     for environment in ACCURACY_ENVIRONMENTS:
         runs = load_results(output_dir, "accuracy", environment)
         if not runs:
@@ -592,7 +608,7 @@ def summarize(output_dir):
             return float(np.median(values))
 
         print(
-            f"Table S6, {environment} ({len(runs)} seed{'s' if len(runs) != 1 else ''}): model error "
+            f"Accuracy, {environment} ({len(runs)} seed{'s' if len(runs) != 1 else ''}): model error "
             f"{median('on_policy', 'common_scale', 'model'):.2g} along the policy, "
             f"{median('random_agent', 'common_scale', 'model'):.2g} on random-agent data; persistence error "
             f"{median('on_policy', 'common_scale', 'persistence'):.2g} and "
@@ -607,9 +623,8 @@ def summarize(output_dir):
         runs = load_results(output_dir, "sensitivity", environment)
         if not runs:
             continue
-        table = "S7" if environment == "DoubleWell" else "S8"
-        print(f"Table {table}, {environment} ({len(runs)} seed{'s' if len(runs) != 1 else ''}): medians over seeds")
-        scale = 0.01  # the R * dt weighting of Table S7
+        print(f"Sensitivity, {environment} ({len(runs)} seed{'s' if len(runs) != 1 else ''}): medians over seeds")
+        scale = 0.01  # R * dt (dt = 0.01): the double-well costs are also reported with actions this much cheaper
         rows = [(name, [r["references"][name]["evaluation"] for r in runs]) for name in runs[0]["references"]]
         for name in runs[0]["variants"]:
             rows.append((f"SKVI {name}, deployed", [r["variants"][name]["sampled"] for r in runs]))
