@@ -29,6 +29,7 @@ koopmanrl_utils/
 ├── dataframe_creator.py                 # Converts Tensorboard results to JSON data frames
 ├── interpret_koopman.json               # Configuration of test file to test interpretability on
 ├── interpret_koopman.py                 # Ingests a Koopman configuration, and interprets its tensor
+├── koopman_prediction_validation.py     # Held-out one-step and multi-step prediction error of the Koopman tensor
 ├── plot_csv_from_tensorboards.py        # Ingests Tensorboard results and generates csv files
 ├── process_episodic_returns.py          # Generates episodic return plots from JSON dataframe
 ├── process_sakc_ablations.py            # Generates the ablation plots for the Soft Actor Koopman-Critic from the JSON dataframes
